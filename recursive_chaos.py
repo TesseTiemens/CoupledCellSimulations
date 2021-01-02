@@ -7,7 +7,10 @@ import cv2
 import matplotlib as mpl
 from progress.bar import Bar
 from datetime import datetime
-
+import multiprocessing as mp
+import time
+import queue
+import math
 def cellamount(n):
   num = 0
   ncount = n
@@ -70,6 +73,29 @@ def coordhelper(maxlevel, scalefactor = 0.8):
   array = coordfractal(0,maxlevel,3,7*np.pi/6,[0,0],array,scalefactor=scalefactor)
   return array
 
+def centerdif(data,dt): #to differentiate an array
+  #using mostly centered differentiation
+  difarray = np.empty(len(data))
+  #first and last seperately
+  difarray[0] = (data[1]-data[0])/dt
+  difarray[-1]= (data[-1]-data[-2])/dt
+  #finding all the other diffs
+  for i in range(1,len(data)-1):
+    difarray[i]=(data[i+1]-data[i-1])/2*dt
+  return difarray
+
+def df(phasevect, couplmatrix, couplcoeff, drivevect):
+  dphase = couplcoeff*(np.mod(-np.matmul(couplmatrix,phasevect)+np.pi,np.pi*2)-np.pi)+drivevect #calculating derivative
+  return dphase
+
+def RK4(phasevect,dt, couplmatrix,couplcoeff,drivevect):
+  K1 = dt* df(phasevect,couplmatrix,couplcoeff,drivevect)
+  K2 = dt* df(phasevect+K1/2,couplmatrix,couplcoeff,drivevect)
+  K3 = dt* df(phasevect+K2/2,couplmatrix,couplcoeff,drivevect)
+  K4 = dt* df(phasevect+K3,couplmatrix,couplcoeff,drivevect)
+  newvect = phasevect+K1/6+K2/3+K3/3+K4/6
+  return newvect
+
 def couplinglines(ax,coordarray,couplmatrix,num): #draws lines between points
   for i in range(num):
     for j in range(num):
@@ -79,34 +105,120 @@ def couplinglines(ax,coordarray,couplmatrix,num): #draws lines between points
         ax.plot(x_vals,y_vals,c = 'k')
   return ax
 
+def makeframe(i,cellnr,locs,dt,step,couplmatrix,phasearray,
+              width,height,dpi,cmap):
+  fig = plt.figure(figsize=(width/dpi,height/dpi), dpi = dpi)
+  ax = fig.add_subplot(1,1,1)
+  plt.xlim((-3.5,3.5))
+  plt.ylim((-3.5,3.5))
+  for loc in range(cellnr): #we make a cirlce from the locs array
+    color = cmap((1+np.sin(phasearray[int(i/(dt*step)),loc]))*0.5) #getting the color for this circle
+    circle = plt.Circle(locs[loc,:],0.1,color=color) #making a circle
+    ax.add_artist(circle)
+  ax = couplinglines(ax, locs,couplmatrix, cellnr)
+  # put pixel buffer in numpy array
+  canvas = FigureCanvas(fig)
+  canvas.draw()
+  mat = np.frombuffer(canvas.tostring_rgb(), dtype = 'uint8').reshape(height,width,3)
+  # return the matrix and close plots
+  plt.close()
+  #print('frame {} done, returning'.format(i))
+  return mat
+
+def frame_queuer(queue_in,queue_out,frames,cellnr,locs,dt,step,
+                 couplmatrix,phasearray,width,height,dpi,cmap):
+  while True:
+    try:
+      framenum = queue_in.get(timeout = 1) #get a job ready
+    except queue.Empty:
+      break
+    else:
+      frame = (makeframe(framenum,cellnr,locs,dt,step,couplmatrix,phasearray,width,height,dpi,cmap))
+      while True: #coordinating putting the frames on queue_out
+        try:
+          last = frames.get(timeout = 5)
+        except:
+          pass
+        else:
+          if last == framenum-1:
+            queue_out.put(frame)
+            queue_out.join()
+            frames.put(framenum)
+            break
+          else:
+            frames.put(last)
+  #print('queuer closing')
+  return True
+
+def parallelvideo(cellnr, levels, tEnd,dt, phasearray,couplmatrix,current_time, scalefactor = 0.8, step = 10, width = 1080, height = 1080, dpi = 100):
+  print('finding coordinates...')
+  locs =  coordhelper(levels, scalefactor)#dividing a circle into even intervals
+  print('coords done')
+  cmap = mpl.cm.get_cmap('seismic') #color map
+  # create OpenCV video writer
+  video = cv2.VideoWriter('outputs/recursive/{}.avi'.format(current_time), cv2.VideoWriter_fourcc(*'MP42'), 30, (width,height))
+ 
+  #start parallelization
+  framequeue = mp.Queue()#empty queue
+  mats = mp.JoinableQueue() #for outputs
+  frames = mp.Queue() #to keep track of what frame we're at
+  frames.put(-1)#the first frame will be 0 and will check for framenum -1
+  processlist = [] #so we can wait for everything to finish
+  maxprocesses = 12 #maybe increase this later?
+  bar2 = Bar('creating video', max= tEnd*step)
+  for i in range(tEnd*step): #creating a queue
+    framequeue.put(i)
+
+ # generating frames
+  for i in range(maxprocesses):
+    #we create a process which calls the frame queuer, these all go through the
+    #queue and call the framemaker, which makes it so we can have multiple
+    #framemakers going
+    p = mp.Process(target=frame_queuer,args=(framequeue,mats,frames,cellnr,locs,dt,step,couplmatrix,phasearray,
+            width,height,dpi,cmap,))
+    processlist.append(p)
+    p.start()
+
+  #we loop untill we've added as many frames as needed
+  framesadded = 0
+  while framesadded < tEnd*step:
+    try:
+      newframe = mats.get(timeout = 1)
+    except:
+      pass
+    else:
+      mats.task_done()
+      video.write(newframe)
+      framesadded +=1
+      bar2.next()
+
+
+  while not frames.empty():
+    frames.get() #flushing to allow the processes to close
+  #print('mats is empty {}'.format(mats.empty()))
+  #print('framequeue is empty {}'.format(framequeue.empty()))
+  for p in processlist:#shut down all the processes
+    p.join()
+    p.close()
+  
+  # close video writer
+  bar2.finish()
+  cv2.destroyAllWindows()
+  video.release()
+
 def videomaker(cellnr, levels, tEnd,dt, phasearray,couplmatrix,current_time, scalefactor = 0.8, step = 10, width = 1080, height = 1080, dpi = 100):
   locs =  coordhelper(levels, scalefactor)#dividing a circle into even intervals
   cmap = mpl.cm.get_cmap('seismic') #color map
   # create OpenCV video writer
-  video = cv2.VideoWriter('{}.avi'.format(current_time), cv2.VideoWriter_fourcc(*'MP42'), 30, (width,height))
+  video = cv2.VideoWriter('outputs/recursive/{}.avi'.format(current_time), cv2.VideoWriter_fourcc(*'MP42'), 30, (width,height))
   bar2 = Bar('making video', max = tEnd*step)
   # loop over your images
   for i in range(tEnd*step):
-
-    fig = plt.figure(figsize=(width/dpi,height/dpi), dpi = dpi)
-    ax = fig.add_subplot(1,1,1)
-    plt.xlim((-3.5,3.5))
-    plt.ylim((-3.5,3.5))
-    for loc in range(cellnr): #we make a cirlce from the locs array
-      color = cmap((1+np.sin(phasearray[int(i/(dt*step)),loc]))*0.5) #getting the color for this circle
-      circle = plt.Circle(locs[loc,:],0.1,color=color) #making a circle
-      ax.add_artist(circle)
-    ax = couplinglines(ax, locs,couplmatrix, cellnr)
-    # put pixel buffer in numpy array
-    canvas = FigureCanvas(fig)
-    canvas.draw()
-    mat = np.frombuffer(canvas.tostring_rgb(), dtype = 'uint8').reshape(height,width,3)
-    #mat = np.array(canvas.renderer._renderer)
-    #mat = cv2.cvtColor(mat, cv2.COLOR_RGB2BGR)
+    mat = makeframe(i,cellnr,locs,dt,step,
+                    couplmatrix,phasearray,width,height,dpi,cmap)
 
     # write frame to video
     video.write(mat)
-    plt.close()
     bar2.next()
 
   # close video writer
@@ -114,7 +226,8 @@ def videomaker(cellnr, levels, tEnd,dt, phasearray,couplmatrix,current_time, sca
   cv2.destroyAllWindows()
   video.release()
 
-def recursivecell(levels = 3, init = 0,tEnd = 100,dt = 0.001,couplcoeff = 0.3,drive = 0.5, 
+def recursivecell(levels = 3, init = 0,tEnd = 100,dt = 0.001,couplcoeff =
+                  0.3,drive = 0.5, plots = True,plots2= True, parallel = True, #for if we want the video paralellized or not 
                   vidja = True, scalefactor = 0.8, step = 10, width = 1080, height = 1080, dpi = 100):#video parameters
   #finding amount of cells
   cellnr =cellamount(levels) 
@@ -129,7 +242,7 @@ def recursivecell(levels = 3, init = 0,tEnd = 100,dt = 0.001,couplcoeff = 0.3,dr
       startvect = np.reshape(startvect,(cellnr,1))
   initcon = np.array2string(np.reshape(startvect,(1,cellnr)))
   #coupling matrices
-  totcoupl = n_matrixgen(levels,couplcoeff)#using function to generate coupling matrix
+  totcoupl = n_matrixgen(levels,0.25)#using function to generate coupling matrix
   drivevect = np.ones(cellnr)*drive
   
   #simulation setup
@@ -148,35 +261,60 @@ def recursivecell(levels = 3, init = 0,tEnd = 100,dt = 0.001,couplcoeff = 0.3,dr
   #actually simulating
   while t <tEnd:
     dphase = couplcoeff*(np.mod(-np.matmul(totcoupl,phasevect)+np.pi,np.pi*2)-np.pi)+drivevect #calculating derivative
-    phasevect = phasevect+ dt*dphase
+    #phasevect = RK4(phasevect,dt,totcoupl,couplcoeff,drivevect)
+    phasevect = phasevect+dt*dphase
     lensarray = np.append(lensarray, np.linalg.norm(phasevect))
-    #phasearray = np.append(phasearray, [phasevect], axis=0)
     phasearray[:,int((t/dt)+1)] = phasevect[:,0]
     t = t+dt
     bar1.next()
   bar1.finish()
   
-  #transposing the array bc I didn't want to rewrite half the plots
-  phasearray = np.transpose(phasearray)
   #finding time for filenames
   now = datetime.now()
+  #dumping the whole thing to a csv for later use
+  np.savetxt('outputs/recursive/{}.csv'.format(now),phasearray)
 
-  #plot phase stuff
-  tarr = np.arange(0,tEnd+1*dt, dt)
-  plt.figure(figsize=(15,10))
-  for i in range(cellnr):
-      plt.plot(tarr, np.mod(phasearray[:,i],2*np.pi))
-      plt.savefig('phase_{}.png'.format(now))
+  #transposing the array bc I didn't want to rewrite half the plots
+  phasearray = np.transpose(phasearray)
 
-  #plot sine
-  plt.figure(figsize=(15,5))
-  for i in range(cellnr):
-      plt.plot(tarr, np.sin(phasearray[:,i]))
+  if plots:
+    #plot phase stuff
+    tarr = np.arange(0,tEnd+1*dt, dt)
+    plt.figure(figsize=(15,10))
+    for i in range(cellnr):
+        plt.plot(tarr, np.mod(phasearray[:,i],2*np.pi))
+    plt.savefig('outputs/recursive/phase_{}.png'.format(now))
+    plt.close()
+    #plot sine
+    plt.figure(figsize=(15,5))
+    for i in range(cellnr):
+       plt.plot(tarr, np.sin(phasearray[:,i]))
 
-  plt.savefig('sine_{}.png'.format(now))
+    plt.savefig('outputs/recursive/sine_{}.png'.format(now))
+    plt.close()
+  #plots that are more useful for bigger sytems
+  if plots2:
+    plotbar = Bar('plotting...', max = cellnr)
+    tarr = np.arange(0,tEnd+1*dt, dt)
+    fig = plt.figure(figsize=(15, 5*math.ceil(cellnr/3)))
+    for i in range(cellnr):
+      data = phasearray[:,i]
+      sins = np.sin(data)
+      diffs = centerdif(sins,dt)
+      ax = fig.add_subplot(int(math.ceil(cellnr/3)),3,i+1)
+      ax.plot(sins,diffs)
+      ax.set_xlabel('x{}'.format(i+1))
+      ax.set_ylabel("x{}'".format(i+1))
+      plotbar.next()
+    plt.savefig('outputs/recursive/{}.png'.format(now))
+    plt.close()
+    plotbar.finish()
 
   #Video stuff
   if vidja == True:
-    videomaker(cellnr,levels,tEnd,dt, phasearray,totcoupl,now,
+    if parallel == True:
+      parallelvideo(cellnr,levels,tEnd,dt, phasearray,totcoupl,now,
                scalefactor,step,width,height,dpi)
+    else:
+      videomaker(cellnr,levels,tEnd,dt,phasearray,totcoupl,now,scalefactor,step,width,height,dpi)
 
