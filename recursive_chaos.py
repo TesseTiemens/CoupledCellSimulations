@@ -272,7 +272,7 @@ def recursivecell(levels = 3, init = 0,tEnd = 100,dt = 0.001,couplcoeff =
   #finding time for filenames
   now = datetime.now()
   #dumping the whole thing to a csv for later use
-  np.savetxt('outputs/recursive/{}.csv'.format(now),phasearray)
+  np.savetxt('outputs/recursive/{now}drive{drive}coupl{coup}.csv'.format(now=now,drive=drive,coup=couplcoeff),phasearray)
 
   #transposing the array bc I didn't want to rewrite half the plots
   phasearray = np.transpose(phasearray)
