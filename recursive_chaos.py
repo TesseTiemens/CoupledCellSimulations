@@ -32,14 +32,19 @@ def n_matrixgen(n,couplconst = 1):
   n_matrix[0,2] = couplconst
   n_matrix[1,0] = couplconst
   n_matrix[2,0] = couplconst
-
+  
+  outercells =3* 2**n #determining how many cells are on the outer layer
   #filling in the rest of the matrix
   for i in range(num):
     for j in range(num):
       if ((abs(i-j)==1 and np.mod(min(i,j),2)==1) #within own triangle
           or i-(2*j+2) ==1 or i-(2*j+2) ==2 #outward coupling
-          or j-(2*i+2) ==1 or j-(2*i+2) ==2): #inward coupling
-        n_matrix[i,j] = couplconst
+          or j-(2*i+2) ==1 or j-(2*i+2) ==2): #inward couplingi
+        if i>= num-outercells:
+          n_matrix[i,j] = 2*couplconst
+        else:
+          n_matrix[i,j] = couplconst
+
   return n_matrix
 
 #generating all the coordinates
@@ -81,7 +86,7 @@ def centerdif(data,dt): #to differentiate an array
   difarray[-1]= (data[-1]-data[-2])/dt
   #finding all the other diffs
   for i in range(1,len(data)-1):
-    difarray[i]=(data[i+1]-data[i-1])/2*dt
+    difarray[i]=(data[i+1]-data[i-1])/(2*dt)
   return difarray
 
 def df(phasevect, couplmatrix, couplcoeff, drivevect):
@@ -249,7 +254,7 @@ def recursivecell(levels = 3, init = 0,tEnd = 100,dt = 0.001,couplcoeff =
   phasevect = startvect
   lensarray = np.empty(1)
   lensarray[0] = np.linalg.norm(phasevect)# array of lengths
-  t = 0
+  t = 0 #+dt
   print(totcoupl)
 
   #phasearray = np.array([phasevect],) #total array of all the phases
@@ -258,24 +263,27 @@ def recursivecell(levels = 3, init = 0,tEnd = 100,dt = 0.001,couplcoeff =
 
   bar1 = Bar('simulating', max = int(tEnd/dt))
 
+  stepcounter = 1 #stepcounter since int(t/dt) did strange things
   #actually simulating
   while t <tEnd:
     dphase = couplcoeff*(np.mod(-np.matmul(totcoupl,phasevect)+np.pi,np.pi*2)-np.pi)+drivevect #calculating derivative
     #phasevect = RK4(phasevect,dt,totcoupl,couplcoeff,drivevect)
     phasevect = phasevect+dt*dphase
     lensarray = np.append(lensarray, np.linalg.norm(phasevect))
-    phasearray[:,int((t/dt)+1)] = phasevect[:,0]
+    phasearray[:,stepcounter] = phasevect[:,0]
+    stepcounter += 1
     t = t+dt
     bar1.next()
   bar1.finish()
   
   #finding time for filenames
   now = datetime.now()
-  #dumping the whole thing to a csv for later use
-  np.savetxt('outputs/recursive/{now}drive{drive}coupl{coup}.csv'.format(now=now,drive=drive,coup=couplcoeff),phasearray)
 
   #transposing the array bc I didn't want to rewrite half the plots
   phasearray = np.transpose(phasearray)
+
+  #dumping the whole thing to a csv for later use
+  np.savetxt('outputs/recursive/{now}drive{drive}coupl{coup}.csv'.format(now=now,drive=drive,coup=couplcoeff),phasearray)
 
   if plots:
     #plot phase stuff
@@ -301,12 +309,28 @@ def recursivecell(levels = 3, init = 0,tEnd = 100,dt = 0.001,couplcoeff =
       data = phasearray[:,i]
       sins = np.sin(data)
       diffs = centerdif(sins,dt)
+
+      #phasespace
       ax = fig.add_subplot(int(math.ceil(cellnr/3)),3,i+1)
       ax.plot(sins,diffs)
       ax.set_xlabel('x{}'.format(i+1))
-      ax.set_ylabel("x{}'".format(i+1))
+      ax.set_ylabel("x'{}".format(i+1))
       plotbar.next()
-    plt.savefig('outputs/recursive/{}.png'.format(now))
+    plt.savefig('outputs/recursive/{}phaseplane.png'.format(now))
+    plotbar.finish()
+    plt.close()
+    #sineplots
+    fig2 = plt.figure(figsize=(15, 5*math.ceil(cellnr/3)))
+    plotbar = Bar('plotting...', max = cellnr)
+    for i in range(cellnr):
+      data = phasearray[:,i]
+      sins = np.sin(data)
+      ax2 = fig2.add_subplot(cellnr,1,i+1)
+      ax2.plot(tarr,sins)
+      ax2.set_xlabel('t')
+      ax2.set_ylabel("x{}".format(i+1))
+      plotbar.next()
+    plt.savefig('outputs/recursive/{}sins.png'.format(now))
     plt.close()
     plotbar.finish()
 
