@@ -11,6 +11,8 @@ import multiprocessing as mp
 import time
 import queue
 import math
+import vapeplot as vp
+
 def cellamount(n):
   num = 0
   ncount = n
@@ -21,7 +23,7 @@ def cellamount(n):
     ncount -= 1
   return num
 
-def n_matrixgen(n,couplconst = 1):
+def n_matrixgen(n,couplconst = 1,prnt = False):
   #finding the amount of points for this amount of layers
   num = cellamount(n)
   #negating the coupling contant for further use
@@ -44,7 +46,11 @@ def n_matrixgen(n,couplconst = 1):
           n_matrix[i,j] = 2*couplconst
         else:
           n_matrix[i,j] = couplconst
-
+  if prnt:
+    print(n_matrix)
+    eigvals,eigvecs = np.linalg.eig(n_matrix)
+    print('eigs =')
+    print(eigvals)
   return n_matrix
 
 #generating all the coordinates
@@ -121,6 +127,7 @@ def makeframe(i,cellnr,locs,dt,step,couplmatrix,phasearray,
     circle = plt.Circle(locs[loc,:],0.1,color=color) #making a circle
     ax.add_artist(circle)
   ax = couplinglines(ax, locs,couplmatrix, cellnr)
+  vp.despine(ax, all = True)
   # put pixel buffer in numpy array
   canvas = FigureCanvas(fig)
   canvas.draw()
@@ -231,14 +238,14 @@ def videomaker(cellnr, levels, tEnd,dt, phasearray,couplmatrix,current_time, sca
   cv2.destroyAllWindows()
   video.release()
 
-def recursivecell(levels = 3, init = 0,tEnd = 100,dt = 0.001,couplcoeff =
+def recursivecell(levels = 3, init = None,tEnd = 100,dt = 0.001,couplcoeff =
                   0.3,drive = 0.5, plots = True,plots2= True, parallel = True, #for if we want the video paralellized or not 
                   vidja = True, scalefactor = 0.8, step = 10, width = 1080, height = 1080, dpi = 100):#video parameters
   #finding amount of cells
   cellnr =cellamount(levels) 
    
   #random startvector
-  if init == 0:
+  if np.any(init == None):
     startvect = np.empty((cellnr,1))
     for i in range(cellnr):
       startvect[i,0] = random.random()*2*np.pi
@@ -265,7 +272,7 @@ def recursivecell(levels = 3, init = 0,tEnd = 100,dt = 0.001,couplcoeff =
 
   stepcounter = 1 #stepcounter since int(t/dt) did strange things
   #actually simulating
-  while t <tEnd:
+  while stepcounter<tEnd/dt+1:
     dphase = couplcoeff*(np.mod(-np.matmul(totcoupl,phasevect)+np.pi,np.pi*2)-np.pi)+drivevect #calculating derivative
     #phasevect = RK4(phasevect,dt,totcoupl,couplcoeff,drivevect)
     phasevect = phasevect+dt*dphase
@@ -287,6 +294,7 @@ def recursivecell(levels = 3, init = 0,tEnd = 100,dt = 0.001,couplcoeff =
 
   if plots:
     #plot phase stuff
+    vp.set_palette('cool')
     tarr = np.arange(0,tEnd+1*dt, dt)
     plt.figure(figsize=(15,10))
     for i in range(cellnr):
@@ -302,6 +310,7 @@ def recursivecell(levels = 3, init = 0,tEnd = 100,dt = 0.001,couplcoeff =
     plt.close()
   #plots that are more useful for bigger sytems
   if plots2:
+    cool = vp.palette('cool')#let's make em pretty
     plotbar = Bar('plotting...', max = cellnr)
     tarr = np.arange(0,tEnd+1*dt, dt)
     fig = plt.figure(figsize=(15, 5*math.ceil(cellnr/3)))
@@ -312,9 +321,10 @@ def recursivecell(levels = 3, init = 0,tEnd = 100,dt = 0.001,couplcoeff =
 
       #phasespace
       ax = fig.add_subplot(int(math.ceil(cellnr/3)),3,i+1)
-      ax.plot(sins,diffs)
+      ax.plot(sins,diffs,c=cool[np.mod(i,len(cool))])
       ax.set_xlabel('x{}'.format(i+1))
       ax.set_ylabel("x'{}".format(i+1))
+      ax.set_ylim(top = 1, bottom=-1)
       plotbar.next()
     plt.savefig('outputs/recursive/{}phaseplane.png'.format(now))
     plotbar.finish()
@@ -326,7 +336,7 @@ def recursivecell(levels = 3, init = 0,tEnd = 100,dt = 0.001,couplcoeff =
       data = phasearray[:,i]
       sins = np.sin(data)
       ax2 = fig2.add_subplot(cellnr,1,i+1)
-      ax2.plot(tarr,sins)
+      ax2.plot(tarr,sins,c=cool[np.mod(i,len(cool))])
       ax2.set_xlabel('t')
       ax2.set_ylabel("x{}".format(i+1))
       plotbar.next()
