@@ -66,9 +66,9 @@ def coordfractal(level, maxlevel, number, angle, mother, coordarray,scalefactor 
 
   if level < maxlevel:
     #left
-    coordarray = coordfractal(level+1, maxlevel, 2*number+2, angle - np.pi/6, owncoord, coordarray)
+    coordarray = coordfractal(level+1, maxlevel, 2*number+2, angle + np.pi/6, owncoord, coordarray)
     #right
-    coordarray = coordfractal(level+1, maxlevel, 2*number+3, angle +
+    coordarray = coordfractal(level+1, maxlevel, 2*number+3, angle -
                               np.pi/6, owncoord,
                               coordarray)
   return coordarray
